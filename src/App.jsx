@@ -13,7 +13,8 @@ import {
   ChevronDown,
   ChevronUp,
   Filter,
-  AlertCircle
+  AlertCircle,
+  TrendingUp
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -33,7 +34,7 @@ import {
   onAuthStateChanged 
 } from 'firebase/auth';
 
-// --- Firebase 配置 (已更換為您直接複製的 100% 正確金鑰) ---
+// --- Firebase 配置 (使用您的 100% 正確金鑰) ---
 let firebaseConfig;
 if (typeof __firebase_config !== 'undefined') {
   firebaseConfig = JSON.parse(__firebase_config);
@@ -82,7 +83,7 @@ const App = () => {
   const [marketTab, setMarketTab] = useState('Overview'); 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null); 
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(true); // 預設深色模式比較專業
   const [exchangeRate, setExchangeRate] = useState(32.5);
   const [isFetchingRate, setIsFetchingRate] = useState(false);
   const [isRankingExpanded, setIsRankingExpanded] = useState(false); 
@@ -103,7 +104,7 @@ const App = () => {
     exchangeRate: '32.5'
   });
 
-  // 1. 身份驗證
+  // 1. 處理身份驗證
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -121,11 +122,13 @@ const App = () => {
     return () => unsubscribe();
   }, []);
 
-  // 2. 監聽 Firestore
+  // 2. 監聽 Firestore 數據 (改為 Public 模式以達成手機電腦同步)
   useEffect(() => {
     if (!user) return;
     try {
-      const q = query(collection(db, 'artifacts', appId, 'users', user.uid, 'realized_records'));
+      // 核心修改：使用公共路徑 /public/data/，這樣不同裝置只要 AppId 一樣就能看到相同資料
+      const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'realized_records'));
+      
       const unsubscribe = onSnapshot(q, (snapshot) => {
         const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         setRecords(data.sort((a, b) => new Date(b.date) - new Date(a.date)));
@@ -187,18 +190,19 @@ const App = () => {
 
   const visibleRecords = useMemo(() => filteredRecords.slice(0, displayLimit), [filteredRecords, displayLimit]);
 
+  // 核心計算：整合匯率換算
   const summaryStats = useMemo(() => {
     if (filteredRecords.length === 0) return { cost: 0, revenue: 0, profit: 0, rate: 0 };
-    let totalCost = 0;
-    let totalRevenue = 0;
+    let totalCostTWD = 0;
+    let totalRevenueTWD = 0;
     filteredRecords.forEach(r => {
-      const rate = r.market === 'Overseas' ? (r.exchangeRate || exchangeRate) : 1;
-      totalCost += r.cost * rate;
-      totalRevenue += r.revenue * rate;
+      const rate = r.market === 'Overseas' ? (parseFloat(r.exchangeRate) || exchangeRate) : 1;
+      totalCostTWD += (parseFloat(r.cost) || 0) * rate;
+      totalRevenueTWD += (parseFloat(r.revenue) || 0) * rate;
     });
-    const totalProfit = totalRevenue - totalCost;
-    const totalRate = totalCost > 0 ? (totalProfit / totalCost) * 100 : 0;
-    return { cost: totalCost, revenue: totalRevenue, profit: totalProfit, rate: totalRate };
+    const totalProfitTWD = totalRevenueTWD - totalCostTWD;
+    const totalRate = totalCostTWD > 0 ? (totalProfitTWD / totalCostTWD) * 100 : 0;
+    return { cost: totalCostTWD, revenue: totalRevenueTWD, profit: totalProfitTWD, rate: totalRate };
   }, [filteredRecords, exchangeRate]);
 
   const chartData = useMemo(() => {
@@ -207,8 +211,8 @@ const App = () => {
     const trendMap = {};
     const isYearly = selectedYear === 'All';
     filteredRecords.forEach(r => {
-      const rate = r.market === 'Overseas' ? (r.exchangeRate || exchangeRate) : 1;
-      const twdProfit = r.profit * rate;
+      const rate = r.market === 'Overseas' ? (parseFloat(r.exchangeRate) || exchangeRate) : 1;
+      const twdProfit = (parseFloat(r.profit) || 0) * rate;
       if (!assetMap[r.symbol]) assetMap[r.symbol] = { symbol: r.symbol, name: r.name, profit: 0 };
       assetMap[r.symbol].profit += twdProfit;
       const trendKey = isYearly ? r.date.substring(0, 4) : r.date.substring(0, 7); 
@@ -243,7 +247,7 @@ const App = () => {
     const rows = filteredRecords.map(r => [
         r.market === 'TW' ? '台股' : '海外股票',
         r.recordType === 'dividend' ? '現金股息' : '交易損益',
-        r.symbol, r.name, r.date, r.shares, r.cost, r.revenue, r.profit, r.profitRate.toFixed(2),
+        r.symbol, r.name, r.date, r.shares, r.cost, r.revenue, r.profit, r.profitRate?.toFixed(2),
         r.market === 'Overseas' ? (r.exchangeRate || exchangeRate) : 1
     ]);
     const csvContent = '\uFEFF' + [headers.join(','), ...rows.map(row => row.map(cell => `"${cell}"`).join(','))].join('\n');
@@ -300,10 +304,10 @@ const App = () => {
       };
 
       if (editingId) {
-        await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'realized_records', editingId), recordData);
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'realized_records', editingId), recordData);
       } else {
         recordData.timestamp = Date.now();
-        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'realized_records'), recordData);
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'realized_records'), recordData);
       }
       closeAndResetModal();
     } catch (err) {
@@ -314,7 +318,7 @@ const App = () => {
 
   const handleDelete = async (id) => {
     if (window.confirm('確定要刪除這筆紀錄嗎？')) {
-      try { await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'realized_records', id)); } catch (err) { console.error(err); }
+      try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'realized_records', id)); } catch (err) { console.error(err); }
     }
   };
 
@@ -328,9 +332,15 @@ const App = () => {
 
   return (
     <div className={`min-h-screen ${theme.bgMain} ${theme.textMain} font-sans pb-8 transition-colors duration-300`}>
-      <div className={`${theme.bgCard} px-4 pt-6 pb-2 sticky top-0 z-20 shadow-sm`}>
+      {/* 頂部導航 */}
+      <div className={`${theme.bgCard} px-4 pt-6 pb-2 sticky top-0 z-20 shadow-sm border-b ${theme.borderMain}`}>
         <div className="flex justify-between items-center mb-6">
-          <h1 className={`text-xl font-bold ${theme.textStrong}`}>帳務</h1>
+          <div className="flex items-center gap-2">
+            <div className="bg-emerald-500 p-1.5 rounded-lg text-white">
+              <TrendingUp size={20} />
+            </div>
+            <h1 className={`text-xl font-bold ${theme.textStrong}`}>投資帳務同步版</h1>
+          </div>
           <div className="flex items-center gap-3">
             <button onClick={exportToCSV} className={`${theme.textMuted} hover:${theme.textStrong} p-1`}><Download size={20} /></button>
             <button onClick={() => setIsDarkMode(!isDarkMode)} className={`${theme.textMuted} hover:${theme.textStrong} p-1`}>
@@ -338,19 +348,20 @@ const App = () => {
             </button>
           </div>
         </div>
-        <div className={`flex justify-between items-end border-b ${theme.borderMain} mb-4`}>
+        <div className={`flex justify-between items-end mb-2`}>
           <div className="flex gap-6 text-sm font-medium overflow-x-auto no-scrollbar">
             {['總覽', '台股', '海外股票'].map(tab => {
               const tabValue = tab === '總覽' ? 'Overview' : (tab === '台股' ? 'TW' : 'Overseas');
+              const isActive = marketTab === tabValue;
               return (
-                <button key={tab} onClick={() => setMarketTab(tabValue)} className={`pb-2 relative whitespace-nowrap ${marketTab === tabValue ? 'text-emerald-500' : theme.textMuted}`}>
-                  {tab}{marketTab === tabValue && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-1 h-1 bg-emerald-500 rounded-full" />}
+                <button key={tab} onClick={() => setMarketTab(tabValue)} className={`pb-2 relative whitespace-nowrap ${isActive ? 'text-emerald-500' : theme.textMuted}`}>
+                  {tab}{isActive && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-1.5 h-1.5 bg-emerald-500 rounded-full" />}
                 </button>
               );
             })}
           </div>
           <div className="pb-2">
-            <select value={selectedYear} onChange={(e) => setSelectedYear(e.target.value)} className="bg-transparent outline-none text-sm font-bold text-right">
+            <select value={selectedYear} onChange={(e) => setSelectedYear(e.target.value)} className="bg-transparent outline-none text-sm font-bold text-right border-b border-white/10">
               <option value="All">全部年份</option>
               {availableYears.map(y => <option key={y} value={y}>{y}年</option>)}
             </select>
@@ -359,29 +370,34 @@ const App = () => {
       </div>
 
       <main className="p-4 space-y-4">
+        {/* 總覽專屬區塊 (總計 + 圖表) */}
         {marketTab === 'Overview' && (
           <div className="space-y-4">
-            <div className={`${theme.bgCard} p-5 rounded-2xl border ${theme.borderMain} shadow-sm`}>
+            <div className={`${theme.bgCard} p-6 rounded-2xl border ${theme.borderMain} shadow-lg`}>
               <div className="flex justify-between items-center mb-4">
-                <h2 className={`font-bold ${theme.textStrong} flex items-center gap-2`}><Wallet size={18} className="text-emerald-500" />{selectedYear === 'All' ? '累積總結算' : `${selectedYear}年 結算`} (TWD)</h2>
-                <div className="text-xs flex items-center gap-1 text-emerald-500 font-bold">匯率 <input type="number" step="0.1" value={exchangeRate} onChange={(e) => setExchangeRate(Number(e.target.value))} className="w-10 bg-transparent border-b border-emerald-500 text-center outline-none" /></div>
+                <h2 className={`font-bold ${theme.textStrong} flex items-center gap-2`}><Wallet size={18} className="text-emerald-500" />{selectedYear === 'All' ? '累積總結算' : `${selectedYear}年 結算`}</h2>
+                <div className="text-xs flex items-center gap-1 text-emerald-500 font-bold bg-emerald-500/10 px-2 py-1 rounded-lg">預設匯率 <input type="number" step="0.1" value={exchangeRate} onChange={(e) => setExchangeRate(Number(e.target.value))} className="w-10 bg-transparent border-b border-emerald-500 text-center outline-none" /></div>
               </div>
               <div>
-                <p className={`text-sm ${theme.textMuted}`}>淨損益</p>
-                <p className={`text-3xl font-bold ${summaryStats.profit >= 0 ? 'text-red-500' : 'text-green-500'}`}>NT$ {summaryStats.profit.toLocaleString(undefined, { maximumFractionDigits: 0 })} <span className="text-lg">({summaryStats.rate.toFixed(2)}%)</span></p>
-                <div className="grid grid-cols-2 gap-4 mt-4">
-                   <div className={`p-3 rounded-xl ${theme.bgInner} border ${theme.borderMain}`}><p className="text-[10px] uppercase font-bold text-slate-500 mb-1">總成本</p><p className="font-mono font-bold">NT$ {summaryStats.cost.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p></div>
-                   <div className={`p-3 rounded-xl ${theme.bgInner} border ${theme.borderMain}`}><p className="text-[10px] uppercase font-bold text-slate-500 mb-1">總收入</p><p className="font-mono font-bold">NT$ {summaryStats.revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p></div>
+                <p className={`text-sm ${theme.textMuted} mb-1`}>淨損益 (TWD換算)</p>
+                <div className="flex items-baseline gap-2">
+                  <span className={`text-3xl font-bold ${summaryStats.profit >= 0 ? 'text-red-500' : 'text-green-500'}`}>NT$ {summaryStats.profit.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                  <span className={`text-lg font-bold ${summaryStats.profit >= 0 ? 'text-red-500' : 'text-green-500'}`}>({summaryStats.rate.toFixed(2)}%)</span>
+                </div>
+                <div className="grid grid-cols-2 gap-4 mt-6">
+                   <div className={`p-3 rounded-xl ${theme.bgInner} border ${theme.borderMain}`}><p className="text-[10px] uppercase font-bold text-slate-500 mb-1 tracking-tighter">總投資成本(TWD)</p><p className="font-mono font-bold">NT$ {summaryStats.cost.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p></div>
+                   <div className={`p-3 rounded-xl ${theme.bgInner} border ${theme.borderMain}`}><p className="text-[10px] uppercase font-bold text-slate-500 mb-1 tracking-tighter">實收總金額(TWD)</p><p className="font-mono font-bold">NT$ {summaryStats.revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p></div>
                 </div>
               </div>
             </div>
+            
             {chartData.assetProfits.length > 0 && (
               <div className={`${theme.bgCard} p-5 rounded-2xl border ${theme.borderMain}`}>
-                <h3 className="font-bold mb-6 flex items-center gap-2 text-emerald-500"><BarChart2 size={18} />累積損益排行</h3>
+                <h3 className="font-bold mb-6 flex items-center gap-2 text-emerald-500"><BarChart2 size={18} />個股損益排名 (TWD)</h3>
                 <div className="space-y-5">
                   {chartData.assetProfits.slice(0, isRankingExpanded ? undefined : 5).map(asset => (
                     <div key={asset.symbol} className="space-y-1.5">
-                      <div className="flex justify-between text-xs font-bold"><span>{asset.symbol} <span className="opacity-50 ml-1">{asset.name}</span></span><span className={asset.profit >= 0 ? 'text-red-500' : 'text-green-500'}>{asset.profit.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span></div>
+                      <div className="flex justify-between text-xs font-bold"><span>{asset.symbol} <span className="opacity-50 ml-1 font-normal">{asset.name}</span></span><span className={asset.profit >= 0 ? 'text-red-500' : 'text-green-500'}>{asset.profit.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span></div>
                       <div className={`h-2 relative rounded-full ${isDarkMode ? 'bg-white/5' : 'bg-slate-100'}`}>
                         <div className={`absolute top-0 bottom-0 left-1/2 w-[1px] ${isDarkMode ? 'bg-white/20' : 'bg-slate-300'}`} />
                         {asset.profit >= 0 ? 
@@ -390,7 +406,7 @@ const App = () => {
                       </div>
                     </div>
                   ))}
-                  {chartData.assetProfits.length > 5 && <button onClick={() => setIsRankingExpanded(!isRankingExpanded)} className={`w-full pt-4 text-xs font-bold ${theme.textMuted} border-t ${theme.borderMain}`}>{isRankingExpanded ? '收起' : '展開全部'}</button>}
+                  {chartData.assetProfits.length > 5 && <button onClick={() => setIsRankingExpanded(!isRankingExpanded)} className={`w-full pt-4 text-xs font-bold ${theme.textMuted} border-t ${theme.borderMain} hover:${theme.textStrong}`}>{isRankingExpanded ? '收起排名' : `查看全部 ${chartData.assetProfits.length} 檔`}</button>}
                 </div>
               </div>
             )}
@@ -401,27 +417,41 @@ const App = () => {
           <div className="space-y-6">
             {Object.entries(visibleRecords.reduce((acc, r) => { const y = r.date.substring(0, 4); if (!acc[y]) acc[y] = []; acc[y].push(r); return acc; }, {})).sort(([a], [b]) => b - a).map(([year, yrRecs]) => (
               <div key={year}>
-                <button onClick={() => setCollapsedYears(p => ({...p, [year]: !p[year]}))} className={`w-full py-2 -mx-4 px-4 border-y ${theme.borderMain} ${isDarkMode ? 'bg-white/5' : 'bg-slate-100'} text-xs font-mono tracking-widest ${theme.textMuted} flex justify-center items-center`}>{year}年 {collapsedYears[year] ? <ChevronDown size={14} /> : <ChevronUp size={14} />}</button>
+                <button onClick={() => setCollapsedYears(p => ({...p, [year]: !p[year]}))} className={`w-full py-2 -mx-4 px-4 border-y ${theme.borderMain} ${isDarkMode ? 'bg-white/5' : 'bg-slate-100'} text-xs font-mono tracking-widest ${theme.textMuted} flex justify-center items-center active:bg-emerald-500/10`}>{year}年 {collapsedYears[year] ? <ChevronDown size={14} className="ml-1" /> : <ChevronUp size={14} className="ml-1" />}</button>
                 {!collapsedYears[year] && (
-                  <div className="space-y-4 mt-4 animate-in fade-in slide-in-from-top-2 duration-300">
-                    {yrRecs.map(r => (
-                      <div key={r.id} className={`${theme.bgCard} rounded-xl overflow-hidden shadow-sm border ${theme.borderMain} relative`}>
-                        {r.recordType === 'dividend' && <div className="absolute left-0 top-0 bottom-0 w-1 bg-yellow-500" />}
-                        <div className="p-4">
-                          <div className="flex justify-between items-start mb-4">
-                            <div><div className="flex items-center gap-2"><span className="text-sm font-bold">{r.symbol}</span><span className={`text-[10px] px-1.5 py-0.5 rounded border ${r.market === 'TW' ? 'border-blue-500/30 text-blue-500' : 'border-purple-500/30 text-purple-500'}`}>{r.market === 'TW' ? '台股' : '美股'}</span></div><h3 className="font-bold text-lg leading-tight mt-1">{r.name}</h3></div>
-                            <span className="text-slate-400 text-xs">{r.date.slice(5).replace('-', '/')}</span>
-                          </div>
-                          <div className="flex justify-between items-end">
-                            <div className="space-y-1">
-                              <div className="text-sm font-medium"><span className={theme.textMuted}>{r.recordType === 'dividend' ? '類型: ' : '股數: '}</span>{r.recordType === 'dividend' ? '配息' : r.shares}</div>
-                              <div className={`text-lg font-bold ${r.profit >= 0 ? 'text-red-500' : 'text-green-500'}`}>{r.profit >= 0 ? '+' : ''}{r.profit.toLocaleString()} <span className="text-xs">({r.profitRate.toFixed(2)}%)</span></div>
+                  <div className="grid gap-4 mt-4 animate-in fade-in slide-in-from-top-2 duration-300">
+                    {yrRecs.map(r => {
+                      const isDiv = r.recordType === 'dividend';
+                      const rate = r.market === 'Overseas' ? (parseFloat(r.exchangeRate) || exchangeRate) : 1;
+                      const profitTWD = (parseFloat(r.profit) || 0) * rate;
+                      return (
+                        <div key={r.id} className={`${theme.bgCard} rounded-xl overflow-hidden shadow-sm border ${theme.borderMain} relative active:scale-[0.98] transition-transform`}>
+                          {isDiv && <div className="absolute left-0 top-0 bottom-0 w-1 bg-yellow-500" />}
+                          <div className="p-4">
+                            <div className="flex justify-between items-start mb-3">
+                              <div><div className="flex items-center gap-2"><span className="text-sm font-bold">{r.symbol}</span><span className={`text-[10px] px-1.5 py-0.5 rounded border ${r.market === 'TW' ? 'border-blue-500/30 text-blue-500' : 'border-purple-500/30 text-purple-500'}`}>{r.market === 'TW' ? '台股' : '美股'}</span></div><h3 className="font-bold text-lg leading-tight mt-1">{r.name}</h3></div>
+                              <span className="text-slate-400 text-xs font-mono">{r.date.slice(5).replace('-', '/')}</span>
                             </div>
-                            <div className="flex gap-1"><button onClick={() => handleEditClick(r)} className="text-slate-400 p-2"><Edit2 size={16} /></button><button onClick={() => handleDelete(r.id)} className="text-slate-400 p-2"><Trash2 size={16} /></button></div>
+                            <div className="flex justify-between items-end">
+                              <div className="space-y-1">
+                                <div className="text-sm font-medium"><span className={theme.textMuted}>{isDiv ? '類型: ' : '股數: '}</span>{isDiv ? '現金股息' : r.shares}</div>
+                                <div className="space-y-0.5">
+                                  <div className={`text-xl font-bold ${r.profit >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                                    {r.market === 'Overseas' ? '$' : ''}{r.profit?.toLocaleString()} <span className="text-xs">({r.profitRate?.toFixed(2)}%)</span>
+                                  </div>
+                                  {r.market === 'Overseas' && (
+                                    <div className={`text-xs font-bold opacity-60 ${profitTWD >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                      換算 TWD: {profitTWD >= 0 ? '+' : ''}{Math.round(profitTWD).toLocaleString()} 元
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex gap-1"><button onClick={() => handleEditClick(r)} className="text-slate-400 p-2"><Edit2 size={16} /></button><button onClick={() => handleDelete(r.id)} className="text-slate-400 p-2"><Trash2 size={16} /></button></div>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -430,34 +460,50 @@ const App = () => {
         )}
       </main>
 
-      <button onClick={() => { setEditingId(null); setIsModalOpen(true); }} className="fixed bottom-8 right-6 w-14 h-14 bg-emerald-500 text-white rounded-full shadow-lg flex items-center justify-center active:scale-95 transition-all z-30"><Plus size={32} /></button>
+      {/* 懸浮新增按鈕 */}
+      <button onClick={() => { setEditingId(null); setIsModalOpen(true); }} className="fixed bottom-8 right-6 w-16 h-16 bg-emerald-500 text-white rounded-full shadow-lg shadow-emerald-500/40 flex items-center justify-center active:scale-90 transition-all z-30"><Plus size={36} strokeWidth={3} /></button>
 
+      {/* 新增/編輯紀錄彈窗 */}
       {isModalOpen && (
         <div className={`fixed inset-0 ${theme.backdrop} backdrop-blur-sm z-50 flex items-center justify-center p-4`}>
-          <div className={`${theme.bgCard} w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]`}>
-            <div className="p-4 border-b border-white/5 flex justify-between items-center bg-black/5 font-bold"><span>紀錄細節</span><button onClick={closeAndResetModal} className="opacity-50">關閉</button></div>
+          <div className={`${theme.bgCard} w-full max-w-sm rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]`}>
+            <div className="p-5 border-b border-white/5 flex justify-between items-center bg-black/5 font-bold"><span>紀錄詳情</span><button onClick={closeAndResetModal} className="opacity-50 text-xl">✕</button></div>
             <form onSubmit={handleSubmit} className="p-6 space-y-4 overflow-y-auto">
               {errorMsg && <div className="bg-red-500/10 border border-red-500/20 text-red-500 p-3 rounded-lg text-xs flex gap-2"><AlertCircle size={14} className="shrink-0" />{errorMsg}</div>}
               <div className="grid grid-cols-2 gap-2">
-                {['TW', 'Overseas'].map(m => <button key={m} type="button" onClick={() => setFormData({...formData, market: m})} className={`py-2 rounded-lg text-sm font-bold border ${formData.market === m ? 'border-emerald-500 bg-emerald-500/10 text-emerald-500' : 'border-white/5 opacity-50'}`}>{m === 'TW' ? '台股' : '海外'}</button>)}
+                {['TW', 'Overseas'].map(m => <button key={m} type="button" onClick={() => setFormData({...formData, market: m})} className={`py-2 rounded-xl text-sm font-bold border ${formData.market === m ? 'border-emerald-500 bg-emerald-500/10 text-emerald-500' : 'border-white/5 opacity-50'}`}>{m === 'TW' ? '台股' : '海外'}</button>)}
               </div>
-              <div className="flex rounded-lg p-1 bg-black/10">
-                {['trade', 'dividend'].map(t => <button key={t} type="button" onClick={() => setFormData({...formData, recordType: t})} className={`flex-1 py-1.5 rounded-md text-xs font-bold transition-all ${formData.recordType === t ? (t === 'trade' ? 'bg-emerald-500' : 'bg-yellow-500') + ' text-white' : 'opacity-50'}`}>{t === 'trade' ? '交易' : '配息'}</button>)}
+              <div className="flex rounded-xl p-1 bg-black/10">
+                {['trade', 'dividend'].map(t => <button key={t} type="button" onClick={() => setFormData({...formData, recordType: t})} className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${formData.recordType === t ? (t === 'trade' ? 'bg-emerald-500' : 'bg-yellow-500') + ' text-white' : 'opacity-50'}`}>{t === 'trade' ? '交易' : '配息'}</button>)}
               </div>
               <div className="grid grid-cols-2 gap-2">
-                <input list="known-symbols" placeholder="代號" required className={`${theme.bgInput} rounded-lg p-3 outline-none`} value={formData.symbol} onChange={handleSymbolChange} />
+                <input list="known-symbols" placeholder="代號" required className={`${theme.bgInput} rounded-xl p-3 outline-none focus:ring-1 ring-emerald-500`} value={formData.symbol} onChange={handleSymbolChange} />
                 <datalist id="known-symbols">{Object.entries(knownStocks).map(([s, n]) => <option key={s} value={s}>{n}</option>)}</datalist>
-                <input placeholder="名稱" required className={`${theme.bgInput} rounded-lg p-3 outline-none`} value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+                <input placeholder="名稱" required className={`${theme.bgInput} rounded-xl p-3 outline-none focus:ring-1 ring-emerald-500`} value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
               </div>
               <div className="grid grid-cols-2 gap-2">
-                {formData.recordType === 'trade' && <input type="number" placeholder="股數" required className={`${theme.bgInput} rounded-lg p-3 outline-none`} value={formData.shares} onChange={e => setFormData({...formData, shares: e.target.value})} />}
-                <input type="date" className={`${theme.bgInput} rounded-lg p-3 outline-none text-xs ${formData.recordType === 'dividend' ? 'col-span-2' : ''}`} value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} />
+                {formData.recordType === 'trade' && <input type="number" placeholder="股數" required className={`${theme.bgInput} rounded-xl p-3 outline-none focus:ring-1 ring-emerald-500`} value={formData.shares} onChange={e => setFormData({...formData, shares: e.target.value})} />}
+                <input type="date" className={`${theme.bgInput} rounded-xl p-3 outline-none text-xs ${formData.recordType === 'dividend' ? 'col-span-2' : ''}`} value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} />
               </div>
+              {formData.market === 'Overseas' && (
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px] font-bold text-slate-500 px-1 uppercase tracking-widest"><span>結匯匯率</span>{isFetchingRate && <RefreshCw size={10} className="animate-spin text-emerald-500" />}</div>
+                  <input type="number" step="0.01" required className={`${theme.bgInput} w-full rounded-xl p-3 outline-none focus:ring-1 ring-emerald-500 font-mono`} value={formData.exchangeRate} onChange={e => setFormData({...formData, exchangeRate: e.target.value})} />
+                </div>
+              )}
               <div className="space-y-4 pt-4 border-t border-white/5">
-                <input type="number" step="0.01" placeholder={formData.recordType === 'dividend' ? "股息總額" : "賣出總額"} required className={`${theme.bgInput} w-full rounded-lg p-3 outline-none text-xl font-mono`} value={formData.revenue} onChange={e => setFormData({...formData, revenue: e.target.value})} />
-                {formData.recordType === 'trade' && <input type="number" step="0.01" placeholder="投資成本" required className={`${theme.bgInput} w-full rounded-lg p-3 outline-none text-xl font-mono`} value={formData.cost} onChange={e => setFormData({...formData, cost: e.target.value})} />}
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold text-slate-500 px-1 uppercase tracking-widest">{formData.recordType === 'dividend' ? "股息總額" : "賣出總額 (實收)"}</span>
+                  <input type="number" step="0.01" required className={`${theme.bgInput} w-full rounded-xl p-3 outline-none text-xl font-mono`} value={formData.revenue} onChange={e => setFormData({...formData, revenue: e.target.value})} />
+                </div>
+                {formData.recordType === 'trade' && (
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-bold text-slate-500 px-1 uppercase tracking-widest">投資總成本</span>
+                    <input type="number" step="0.01" required className={`${theme.bgInput} w-full rounded-xl p-3 outline-none text-xl font-mono`} value={formData.cost} onChange={e => setFormData({...formData, cost: e.target.value})} />
+                  </div>
+                )}
               </div>
-              <button type="submit" className={`w-full text-white font-bold py-4 rounded-xl shadow-lg active:scale-95 transition-all ${editingId ? 'bg-blue-500' : 'bg-emerald-500'}`}>{editingId ? '確認修改' : '儲存紀錄'}</button>
+              <button type="submit" className={`w-full text-white font-bold py-4 rounded-2xl shadow-lg transition-all active:scale-95 ${editingId ? 'bg-blue-500' : 'bg-emerald-500'}`}>{editingId ? '確認修改並同步' : '儲存紀錄並同步'}</button>
             </form>
           </div>
         </div>
