@@ -33,13 +33,13 @@ import {
   onAuthStateChanged 
 } from 'firebase/auth';
 
-// --- Firebase 配置 (已更換為您截圖中的專屬正確金鑰，修正第 9 位字母為小寫 y) ---
+// --- Firebase 配置 (已更換為您直接複製的 100% 正確金鑰) ---
 let firebaseConfig;
 if (typeof __firebase_config !== 'undefined') {
   firebaseConfig = JSON.parse(__firebase_config);
 } else {
   firebaseConfig = {
-    apiKey: "AIzaSyAgyHwYLwAKeDCpGlCbCSJyTzNYzMUhxtU",
+    apiKey: "AIzaSyAgYHwYLwAKeDCpG1CbCSJyTzNYzMUhxtU",
     authDomain: "my-stock-e83d8.firebaseapp.com",
     projectId: "my-stock-e83d8",
     storageBucket: "my-stock-e83d8.firebasestorage.app",
